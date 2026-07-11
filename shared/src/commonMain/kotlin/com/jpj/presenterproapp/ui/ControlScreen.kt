@@ -1,22 +1,42 @@
 package com.jpj.presenterproapp.ui
 
+import androidx.compose.animation.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBackIosNew
 import androidx.compose.material.icons.filled.NavigateBefore
 import androidx.compose.material.icons.filled.NavigateNext
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import cafe.adriel.voyager.core.model.ScreenModel
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
 import cafe.adriel.voyager.core.screen.Screen
+import cafe.adriel.voyager.navigator.LocalNavigator
+import cafe.adriel.voyager.navigator.currentOrThrow
+import com.juul.kable.Peripheral
+import com.juul.kable.Scanner
+import com.juul.kable.Filter
+import com.juul.kable.uuidFrom
+import com.juul.kable.State
+import com.juul.kable.peripheral
 import io.kamel.image.KamelImage
 import io.kamel.image.asyncPainterResource
 import io.ktor.client.*
@@ -28,6 +48,8 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -51,7 +73,19 @@ data class WSMessage(
     val total_slides: Int? = null
 )
 
-class ControlScreenModel(val ip: String, val port: Int) : ScreenModel {
+@Serializable
+data class BleStateResponse(
+    val index: Int,
+    val total: Int,
+    val notes: String
+)
+
+class ControlScreenModel(
+    val ip: String,
+    val port: Int,
+    val isBle: Boolean,
+    val bleAddress: String?
+) : ScreenModel {
     private val client = HttpClient {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
@@ -68,9 +102,15 @@ class ControlScreenModel(val ip: String, val port: Int) : ScreenModel {
     private val _isConnected = MutableStateFlow(false)
     val isConnected = _isConnected.asStateFlow()
 
+    private var blePeripheral: Peripheral? = null
+
     init {
-        loadSlides()
-        startWebSocket()
+        if (isBle) {
+            startBleConnection()
+        } else {
+            loadSlides()
+            startWebSocket()
+        }
     }
 
     private fun loadSlides() {
@@ -90,6 +130,7 @@ class ControlScreenModel(val ip: String, val port: Int) : ScreenModel {
         screenModelScope.launch {
             try {
                 client.webSocket("ws://$ip:$port/ws/mirror") {
+                    _isConnected.value = true
                     for (frame in incoming) {
                         if (frame is Frame.Text) {
                             val text = frame.readText()
@@ -106,120 +147,390 @@ class ControlScreenModel(val ip: String, val port: Int) : ScreenModel {
         }
     }
 
-    fun next() {
+    private fun startBleConnection() {
         screenModelScope.launch {
-            client.post("http://$ip:$port/control/navigate?action=next")
+            try {
+                // Scan for the advertisement matching our SERVICE_UUID
+                val scanner = Scanner {
+                    filters = listOf(Filter.Service(uuidFrom("4fafc201-1fb5-459e-8fcc-c5c9c331914b")))
+                }
+                val advertisement = scanner.advertisements.first()
+                val peripheral = screenModelScope.peripheral(advertisement)
+
+                // Track connection status
+                screenModelScope.launch {
+                    peripheral.state.collect { state ->
+                        _isConnected.value = (state == State.Connected)
+                    }
+                }
+
+                peripheral.connect()
+                blePeripheral = peripheral
+
+                // Observe slide state characteristic updates
+                val stateChar = com.juul.kable.characteristicOf(
+                    service = "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
+                    characteristic = "d66e744b-449e-4c74-a60d-c07a9e99e28a"
+                )
+
+                peripheral.observe(stateChar)
+                    .collect { data ->
+                        try {
+                            val text = data.decodeToString()
+                            val state = Json.decodeFromString<BleStateResponse>(text)
+                            _currentIndex.value = state.index
+                            
+                            // Dynamically generate basic slide representations
+                            val dummyList = List(state.total) { i ->
+                                if (i == state.index) {
+                                    SlideInfo(title = "Slide ${i + 1}", notes = state.notes)
+                                } else {
+                                    SlideInfo(title = "Slide ${i + 1}", notes = "")
+                                }
+                            }
+                            _slides.value = dummyList
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+            } catch (e: Exception) {
+                _isConnected.value = false
+            }
+        }
+    }
+
+    fun next() {
+        if (isBle) {
+            sendBleCommand("action=next")
+        } else {
+            screenModelScope.launch {
+                try {
+                    client.post("http://$ip:$port/control/navigate?action=next")
+                } catch (e: Exception) {}
+            }
         }
     }
 
     fun prev() {
-        screenModelScope.launch {
-            client.post("http://$ip:$port/control/navigate?action=prev")
+        if (isBle) {
+            sendBleCommand("action=prev")
+        } else {
+            screenModelScope.launch {
+                try {
+                    client.post("http://$ip:$port/control/navigate?action=prev")
+                } catch (e: Exception) {}
+            }
         }
     }
 
     fun toggleStandby() {
+        if (isBle) {
+            sendBleCommand("action=standby")
+        } else {
+            screenModelScope.launch {
+                try {
+                    client.post("http://$ip:$port/control/standby")
+                } catch (e: Exception) {}
+            }
+        }
+    }
+
+    private fun sendBleCommand(command: String) {
         screenModelScope.launch {
-            client.post("http://$ip:$port/control/standby")
+            try {
+                val peripheral = blePeripheral ?: return@launch
+                val cmdChar = com.juul.kable.characteristicOf(
+                    service = "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
+                    characteristic = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+                )
+                peripheral.write(cmdChar, command.encodeToByteArray(), com.juul.kable.WriteType.WithoutResponse)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
     override fun onDispose() {
         client.close()
+        screenModelScope.launch {
+            try {
+                blePeripheral?.disconnect()
+            } catch (e: Exception) {}
+        }
         super.onDispose()
     }
 }
 
-data class ControlScreen(val ip: String, val port: Int) : Screen {
+data class ControlScreen(
+    val ip: String,
+    val port: Int,
+    val isBle: Boolean = false,
+    val bleAddress: String? = null
+) : Screen {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     override fun Content() {
-        val model = rememberScreenModel { ControlScreenModel(ip, port) }
+        val navigator = LocalNavigator.currentOrThrow
+        val model = rememberScreenModel { ControlScreenModel(ip, port, isBle, bleAddress) }
         val currentIndex by model.currentIndex.collectAsState()
         val slides by model.slides.collectAsState()
         val isConnected by model.isConnected.collectAsState()
 
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = { Text("Presenter Remote") },
-                    actions = {
-                        if (!isConnected) {
-                            Text("Offline", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp))
-                        } else {
-                            Text("Online", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(8.dp))
+                CenterAlignedTopAppBar(
+                    title = {
+                        Text(
+                            text = "PRESENTER PRO",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NeonCyan,
+                            letterSpacing = 1.sp
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { navigator.pop() }) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBackIosNew,
+                                contentDescription = "Back",
+                                tint = NeonCyan
+                            )
                         }
-                    }
+                    },
+                    actions = {
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 12.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(
+                                    if (isConnected) Color(0xFF152A2D) else Color(0xFF2C1E21)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isConnected) NeonCyan.copy(alpha = 0.5f) else Color.Red.copy(alpha = 0.5f),
+                                    RoundedCornerShape(20.dp)
+                                )
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (isConnected) (if (isBle) "BLE ONLINE" else "WIFI ONLINE") else "OFFLINE",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isConnected) NeonCyan else Color.Red
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                        containerColor = DarkBg
+                    )
                 )
             },
             bottomBar = {
-                BottomAppBar {
+                BottomAppBar(
+                    containerColor = DarkSurface,
+                    tonalElevation = 8.dp,
+                    modifier = Modifier
+                        .height(72.dp)
+                        .border(
+                            1.dp,
+                            AccentTeal.copy(alpha = 0.2f),
+                            RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                        )
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = { model.prev() }) {
-                            Icon(Icons.Default.NavigateBefore, contentDescription = "Previous")
+                        IconButton(
+                            onClick = { model.prev() },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(DarkBg, RoundedCornerShape(24.dp))
+                                .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.NavigateBefore,
+                                contentDescription = "Previous",
+                                tint = NeonCyan,
+                                modifier = Modifier.size(28.dp)
+                            )
                         }
-                        IconButton(onClick = { model.toggleStandby() }) {
-                            Icon(Icons.Default.Pause, contentDescription = "Standby")
+
+                        IconButton(
+                            onClick = { model.toggleStandby() },
+                            modifier = Modifier
+                                .size(56.dp)
+                                .background(NeonCyan, RoundedCornerShape(28.dp))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Pause,
+                                contentDescription = "Standby",
+                                tint = DarkBg,
+                                modifier = Modifier.size(32.dp)
+                            )
                         }
-                        IconButton(onClick = { model.next() }) {
-                            Icon(Icons.Default.NavigateNext, contentDescription = "Next")
+
+                        IconButton(
+                            onClick = { model.next() },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(DarkBg, RoundedCornerShape(24.dp))
+                                .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.NavigateNext,
+                                contentDescription = "Next",
+                                tint = NeonCyan,
+                                modifier = Modifier.size(28.dp)
+                            )
                         }
                     }
                 }
-            }
+            },
+            containerColor = DarkBg
         ) { padding ->
-            Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-                if (slides.isNotEmpty() && currentIndex < slides.size) {
-                    val imageUrl = "http://$ip:$port/slides/$currentIndex/image"
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                            .padding(8.dp)
-                            .pointerInput(Unit) {
-                                detectHorizontalDragGestures { change, dragAmount ->
-                                    if (dragAmount > 50) model.prev()
-                                    else if (dragAmount < -50) model.next()
-                                    change.consume()
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                if (isConnected) {
+                    if (slides.isNotEmpty() && currentIndex < slides.size) {
+                        // Slide Preview Box
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(DarkSurface)
+                                .border(1.dp, AccentTeal.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
+                                .pointerInput(Unit) {
+                                    detectHorizontalDragGestures { change, dragAmount ->
+                                        if (dragAmount > 50) model.prev()
+                                        else if (dragAmount < -50) model.next()
+                                        change.consume()
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isBle) {
+                                // BLE Mode doesn't support streaming heavy images over radio, show active state
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = "Bluetooth Offline Control",
+                                        color = MutedGrey,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Slide ${currentIndex + 1} of ${slides.size}",
+                                        color = NeonCyan,
+                                        fontSize = 24.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
                                 }
+                            } else {
+                                val imageUrl = "http://$ip:$port/slides/$currentIndex/image"
+                                KamelImage(
+                                    resource = { asyncPainterResource(imageUrl) },
+                                    contentDescription = "Slide Preview",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit,
+                                    onLoading = { progress ->
+                                        CircularProgressIndicator(color = NeonCyan)
+                                    }
+                                )
                             }
-                    ) {
-                        KamelImage(
-                            resource = { asyncPainterResource(imageUrl) },
-                            contentDescription = "Slide Preview",
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        // Speaker Notes
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "SPEAKER NOTES",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = NeonCyan,
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = "SLIDE ${currentIndex + 1} / ${slides.size}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MutedGrey
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            colors = CardDefaults.cardColors(containerColor = DarkSurface.copy(alpha = 0.6f)),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .border(1.dp, AccentTeal.copy(alpha = 0.15f), RoundedCornerShape(16.dp))
+                                    .padding(16.dp)
+                            ) {
+                                Text(
+                                    text = slides[currentIndex].notes.ifEmpty { "No notes defined for this slide." },
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontSize = 16.sp,
+                                    lineHeight = 24.sp
+                                )
+                            }
+                        }
+                    } else {
+                        // Loading presentation data
+                        Box(
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit
-                        )
-                    }
-                    
-                    Text(
-                        text = "Notes:",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
-                    
-                    Card(
-                        modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp, vertical = 8.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Text(
-                            text = slides[currentIndex].notes.ifEmpty { "No notes for this slide." },
-                            modifier = Modifier.padding(16.dp),
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                } else if (isConnected) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = NeonCyan)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("Synchronizing presentation data...", color = MutedGrey)
+                            }
+                        }
                     }
                 } else {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Unable to connect to server.")
+                    // Connection lost state
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Text(
+                                text = "Connecting to server...",
+                                color = NeonCyan,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Please wait while we establish a reliable connection link.",
+                                color = MutedGrey,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(24.dp))
+                            CircularProgressIndicator(color = NeonCyan)
+                        }
                     }
                 }
             }
