@@ -52,7 +52,7 @@ actual class ServiceDiscovery actual constructor() {
         }
 
         try {
-            nsdManager?.discoverServices("_presenterpro._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            nsdManager?.discoverServices("_presenterpro._tcp", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         } catch (e: Exception) {
             e.printStackTrace()
         }
