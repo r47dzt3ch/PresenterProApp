@@ -440,6 +440,14 @@ data class ControlScreen(
                                     contentScale = ContentScale.Fit,
                                     onLoading = { progress ->
                                         CircularProgressIndicator(color = NeonCyan)
+                                    },
+                                    onFailure = { exception ->
+                                        Text(
+                                            text = "Load Error: ${exception.message}",
+                                            color = Color.Red,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(16.dp)
+                                        )
                                     }
                                 )
                             }
