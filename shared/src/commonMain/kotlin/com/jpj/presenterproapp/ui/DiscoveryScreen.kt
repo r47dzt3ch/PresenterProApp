@@ -30,7 +30,7 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import com.juul.kable.Advertisement
 import com.juul.kable.Scanner
 import com.juul.kable.Filter
-import com.juul.kable.uuidFrom
+import com.benasher44.uuid.uuidFrom
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 
@@ -88,15 +88,15 @@ class DiscoveryScreen : Screen {
                     .catch { e -> println("BLE Scan Error: ${e.message}") }
                     .collect { advertisement ->
                         val name = advertisement.name ?: "PyPresenterPro BLE"
-                        val address = advertisement.address
+                        val identifier = advertisement.identifier.toString()
                         val newBleServer = DiscoveredServer(
                             name = name,
-                            ip = address, // Use hardware address as unique identifier
+                            ip = identifier, // Use identifier as unique identifier
                             port = 0,
                             isBle = true,
                             bleAdvertisement = advertisement
                         )
-                        if (discoveredServers.none { it.ip == address }) {
+                        if (discoveredServers.none { it.ip == identifier }) {
                             discoveredServers = discoveredServers + newBleServer
                         }
                     }
@@ -170,7 +170,7 @@ class DiscoveryScreen : Screen {
                                 color = MutedGrey.copy(alpha = 0.6f),
                                 fontSize = 12.sp,
                                 textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 24.dp, top = 8.dp)
+                                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp)
                             )
                         }
                     } else {
@@ -238,7 +238,7 @@ class DiscoveryScreen : Screen {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
                                                 text = server.name,
-                                                color = Color.white,
+                                                color = Color.White,
                                                 fontSize = 16.sp,
                                                 fontWeight = FontWeight.SemiBold
                                             )

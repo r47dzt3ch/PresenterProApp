@@ -31,10 +31,10 @@ import cafe.adriel.voyager.core.model.screenModelScope
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import com.benasher44.uuid.uuidFrom
 import com.juul.kable.Peripheral
 import com.juul.kable.Scanner
 import com.juul.kable.Filter
-import com.juul.kable.uuidFrom
 import com.juul.kable.State
 import com.juul.kable.peripheral
 import io.kamel.image.KamelImage
