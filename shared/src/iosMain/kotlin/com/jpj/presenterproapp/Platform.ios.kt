@@ -22,6 +22,23 @@ class IOSPlatform: Platform {
         // Placeholder for iOS until Coil multiplatform or Ktor implementation
         Text("Image loading not yet implemented on iOS", color = Color.White)
     }
+
+    override fun connectToWifi(
+        ssid: String,
+        password: String,
+        onSuccess: (gatewayIp: String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val configuration = platform.NetworkExtension.NEHotspotConfiguration(ssid, password, false)
+        configuration.joinOnce = true
+        platform.NetworkExtension.NEHotspotConfigurationManager.sharedManager().applyConfiguration(configuration) { error ->
+            if (error == null) {
+                onSuccess("192.168.137.1")
+            } else {
+                onError(error.localizedDescription ?: "Unknown error")
+            }
+        }
+    }
 }
 
 actual fun getPlatform(): Platform = IOSPlatform()

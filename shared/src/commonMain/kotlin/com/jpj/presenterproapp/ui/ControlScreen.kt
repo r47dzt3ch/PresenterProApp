@@ -106,6 +106,15 @@ class ControlScreenModel(
     private val _presentationId = MutableStateFlow("")
     val presentationId = _presentationId.asStateFlow()
 
+    private val _isBleMode = MutableStateFlow(isBle)
+    val isBleMode = _isBleMode.asStateFlow()
+
+    private val _currentIp = MutableStateFlow(ip)
+    val currentIp = _currentIp.asStateFlow()
+
+    private val _currentPort = MutableStateFlow(port)
+    val currentPort = _currentPort.asStateFlow()
+
     private var blePeripheral: Peripheral? = null
 
     init {
@@ -120,7 +129,7 @@ class ControlScreenModel(
     private fun loadSlides() {
         screenModelScope.launch {
             try {
-                val response: SlidesResponse = client.get("http://$ip:$port/slides").body()
+                val response: SlidesResponse = client.get("http://${_currentIp.value}:${_currentPort.value}/slides").body()
                 _slides.value = response.slides
                 _currentIndex.value = response.current_index
                 _presentationId.value = response.presentation_id
@@ -134,7 +143,7 @@ class ControlScreenModel(
     private fun startWebSocket() {
         screenModelScope.launch {
             try {
-                client.webSocket("ws://$ip:$port/ws/mirror") {
+                client.webSocket("ws://${_currentIp.value}:${_currentPort.value}/ws/mirror") {
                     _isConnected.value = true
                     for (frame in incoming) {
                         if (frame is Frame.Text) {
@@ -175,7 +184,40 @@ class ControlScreenModel(
                 peripheral.connect()
                 blePeripheral = peripheral
 
-                // Observe slide state characteristic updates
+                // 1. Read Wi-Fi credentials characteristic from BLE
+                try {
+                    val wifiChar = com.juul.kable.characteristicOf(
+                        service = "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
+                        characteristic = "e74b3e6c-a496-48c5-9276-f3680e599ad6"
+                    )
+                    val wifiBytes = peripheral.read(wifiChar)
+                    val wifiJson = wifiBytes.decodeToString()
+                    
+                    val ssidRegex = """"ssid"\s*:\s*"([^"]+)"""".toRegex()
+                    val passRegex = """"passphrase"\s*:\s*"([^"]+)"""".toRegex()
+                    
+                    val ssid = ssidRegex.find(wifiJson)?.groupValues?.get(1)
+                    val passphrase = passRegex.find(wifiJson)?.groupValues?.get(1)
+
+                    if (ssid != null && passphrase != null) {
+                        getPlatform().connectToWifi(ssid, passphrase,
+                            onSuccess = { gatewayIp ->
+                                _currentIp.value = gatewayIp
+                                _currentPort.value = 5000
+                                _isBleMode.value = false
+                                loadSlides()
+                                startWebSocket()
+                            },
+                            onError = { error ->
+                                println("Wi-Fi Direct auto-connect failed: $error")
+                            }
+                        )
+                    }
+                } catch (wifiErr: Exception) {
+                    println("Could not auto-connect to Wi-Fi: ${wifiErr.message}")
+                }
+
+                // 2. Observe slide state characteristic updates (as fallback/backup)
                 val stateChar = com.juul.kable.characteristicOf(
                     service = "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
                     characteristic = "d66e744b-449e-4c74-a60d-c07a9e99e28a"
@@ -208,36 +250,36 @@ class ControlScreenModel(
     }
 
     fun next() {
-        if (isBle) {
+        if (_isBleMode.value) {
             sendBleCommand("action=next")
         } else {
             screenModelScope.launch {
                 try {
-                    client.post("http://$ip:$port/control/navigate?action=next")
+                    client.post("http://${_currentIp.value}:${_currentPort.value}/control/navigate?action=next")
                 } catch (e: Exception) {}
             }
         }
     }
 
     fun prev() {
-        if (isBle) {
+        if (_isBleMode.value) {
             sendBleCommand("action=prev")
         } else {
             screenModelScope.launch {
                 try {
-                    client.post("http://$ip:$port/control/navigate?action=prev")
+                    client.post("http://${_currentIp.value}:${_currentPort.value}/control/navigate?action=prev")
                 } catch (e: Exception) {}
             }
         }
     }
 
     fun toggleStandby() {
-        if (isBle) {
+        if (_isBleMode.value) {
             sendBleCommand("action=standby")
         } else {
             screenModelScope.launch {
                 try {
-                    client.post("http://$ip:$port/control/standby")
+                    client.post("http://${_currentIp.value}:${_currentPort.value}/control/standby")
                 } catch (e: Exception) {}
             }
         }
@@ -284,6 +326,9 @@ data class ControlScreen(
         val slides by model.slides.collectAsState()
         val isConnected by model.isConnected.collectAsState()
         val presentationId by model.presentationId.collectAsState()
+        val isBleMode by model.isBleMode.collectAsState()
+        val currentIp by model.currentIp.collectAsState()
+        val currentPort by model.currentPort.collectAsState()
 
         Scaffold(
             topBar = {
@@ -322,7 +367,7 @@ data class ControlScreen(
                                 .padding(horizontal = 12.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = if (isConnected) (if (isBle) "BLE ONLINE" else "WIFI ONLINE") else "OFFLINE",
+                                text = if (isConnected) (if (isBleMode) "BLE ONLINE" else "WIFI ONLINE") else "OFFLINE",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isConnected) NeonCyan else Color.Red
@@ -424,7 +469,7 @@ data class ControlScreen(
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            if (isBle) {
+                            if (isBleMode) {
                                 // BLE Mode doesn't support streaming heavy images over radio, show active state
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text(
@@ -441,7 +486,7 @@ data class ControlScreen(
                                     )
                                 }
                             } else {
-                                val imageUrl = "http://$ip:$port/slides/$currentIndex/image?pid=$presentationId"
+                                val imageUrl = "http://$currentIp:$currentPort/slides/$currentIndex/image?pid=$presentationId"
                                 getPlatform().RemoteImage(
                                     url = imageUrl,
                                     contentDescription = "Slide Preview",

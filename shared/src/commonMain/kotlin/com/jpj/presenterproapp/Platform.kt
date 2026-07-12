@@ -16,6 +16,13 @@ interface Platform {
         onLoading: @Composable () -> Unit,
         onFailure: @Composable (Throwable) -> Unit
     )
+
+    fun connectToWifi(
+        ssid: String,
+        password: String,
+        onSuccess: (gatewayIp: String) -> Unit,
+        onError: (String) -> Unit
+    )
 }
 
 expect fun getPlatform(): Platform
