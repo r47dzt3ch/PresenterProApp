@@ -33,6 +33,9 @@ import com.juul.kable.Filter
 import com.benasher44.uuid.uuidFrom
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import io.ktor.client.*
+import io.ktor.client.request.*
+import com.jpj.presenterproapp.getPlatform
 
 // High-tech Premium Dark Palette
 val DarkBg = Color(0xFF0B0C10)
@@ -61,6 +64,9 @@ class DiscoveryScreen : Screen {
 
         var ipAddress by remember { mutableStateOf("192.168.1.100") }
         var port by remember { mutableStateOf("5000") }
+
+        var isPairing by remember { mutableStateOf(false) }
+        var pairingError by remember { mutableStateOf<String?>(null) }
 
         // Start mDNS Network Discovery
         DisposableEffect(Unit) {
@@ -204,15 +210,33 @@ class DiscoveryScreen : Screen {
                                                             bleAddress = server.ip
                                                         )
                                                     )
-                                                } else {
-                                                    navigator.push(
-                                                        ControlScreen(
-                                                            ip = server.ip,
-                                                            port = server.port,
-                                                            isBle = false
-                                                        )
-                                                    )
-                                                }
+                                                 } else {
+                                                     isPairing = true
+                                                     pairingError = null
+                                                     coroutineScope.launch {
+                                                         try {
+                                                             val client = HttpClient()
+                                                             val deviceName = getPlatform().name
+                                                             val response = client.post("http://${server.ip}:${server.port}/control/pair?device=$deviceName")
+                                                             client.close()
+                                                             if (response.status.value in 200..299) {
+                                                                 navigator.push(
+                                                                     ControlScreen(
+                                                                         ip = server.ip,
+                                                                         port = server.port,
+                                                                         isBle = false
+                                                                     )
+                                                                 )
+                                                             } else {
+                                                                 pairingError = "Connection declined by presenter."
+                                                             }
+                                                         } catch (e: Exception) {
+                                                             pairingError = "Failed to reach server: ${e.message}"
+                                                         } finally {
+                                                             isPairing = false
+                                                         }
+                                                     }
+                                                 }
                                             }
                                             .padding(16.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -353,6 +377,57 @@ class DiscoveryScreen : Screen {
                         }
                     }
                 }
+            }
+
+            if (isPairing) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.8f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.padding(32.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator(color = NeonCyan)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Pairing with Presenter...",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Please accept the connection request on your desktop screen.",
+                                color = MutedGrey,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            pairingError?.let { err ->
+                AlertDialog(
+                    onDismissRequest = { pairingError = null },
+                    title = { Text("Connection Failed", color = Color.White) },
+                    text = { Text(err, color = MutedGrey) },
+                    confirmButton = {
+                        TextButton(onClick = { pairingError = null }) {
+                            Text("OK", color = NeonCyan)
+                        }
+                    },
+                    containerColor = DarkSurface
+                )
             }
         }
     }

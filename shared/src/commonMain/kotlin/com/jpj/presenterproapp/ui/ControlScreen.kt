@@ -184,37 +184,70 @@ class ControlScreenModel(
                 peripheral.connect()
                 blePeripheral = peripheral
 
-                // 1. Read Wi-Fi credentials characteristic from BLE
+                // 1. Send pairing request to Desktop
+                try {
+                    val cmdChar = com.juul.kable.characteristicOf(
+                        service = "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
+                        characteristic = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+                    )
+                    val deviceName = getPlatform().name
+                    val pairCmd = "action=request_pair&device=$deviceName"
+                    peripheral.write(cmdChar, pairCmd.encodeToByteArray())
+                } catch (cmdErr: Exception) {
+                    println("Failed to send pairing request: ${cmdErr.message}")
+                }
+
+                // 2. Poll Wi-Fi status characteristic from BLE until accepted
                 try {
                     val wifiChar = com.juul.kable.characteristicOf(
                         service = "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
                         characteristic = "e74b3e6c-a496-48c5-9276-f3680e599ad6"
                     )
-                    val wifiBytes = peripheral.read(wifiChar)
-                    val wifiJson = wifiBytes.decodeToString()
                     
-                    val ssidRegex = """"ssid"\s*:\s*"([^"]+)"""".toRegex()
-                    val passRegex = """"passphrase"\s*:\s*"([^"]+)"""".toRegex()
-                    
-                    val ssid = ssidRegex.find(wifiJson)?.groupValues?.get(1)
-                    val passphrase = passRegex.find(wifiJson)?.groupValues?.get(1)
+                    // Poll status in a coroutine loop
+                    screenModelScope.launch {
+                        for (i in 1..30) { // Timeout after 30 seconds
+                            kotlinx.coroutines.delay(1000)
+                            try {
+                                val wifiBytes = peripheral.read(wifiChar)
+                                val wifiJson = wifiBytes.decodeToString()
+                                
+                                val statusRegex = """"status"\s*:\s*"([^"]+)"""".toRegex()
+                                val status = statusRegex.find(wifiJson)?.groupValues?.get(1) ?: "none"
+                                
+                                if (status == "accepted") {
+                                    val ssidRegex = """"ssid"\s*:\s*"([^"]+)"""".toRegex()
+                                    val passRegex = """"passphrase"\s*:\s*"([^"]+)"""".toRegex()
+                                    
+                                    val ssid = ssidRegex.find(wifiJson)?.groupValues?.get(1)
+                                    val passphrase = passRegex.find(wifiJson)?.groupValues?.get(1)
 
-                    if (ssid != null && passphrase != null) {
-                        getPlatform().connectToWifi(ssid, passphrase,
-                            onSuccess = { gatewayIp ->
-                                _currentIp.value = gatewayIp
-                                _currentPort.value = 5000
-                                _isBleMode.value = false
-                                loadSlides()
-                                startWebSocket()
-                            },
-                            onError = { error ->
-                                println("Wi-Fi Direct auto-connect failed: $error")
+                                    if (ssid != null && passphrase != null) {
+                                        getPlatform().connectToWifi(ssid, passphrase,
+                                            onSuccess = { gatewayIp ->
+                                                _currentIp.value = gatewayIp
+                                                _currentPort.value = 5000
+                                                _isBleMode.value = false
+                                                loadSlides()
+                                                startWebSocket()
+                                            },
+                                            onError = { error ->
+                                                println("Wi-Fi Direct auto-connect failed: $error")
+                                            }
+                                        )
+                                    }
+                                    break
+                                } else if (status == "declined") {
+                                    println("Pairing request was declined by the presenter.")
+                                    break
+                                }
+                            } catch (e: Exception) {
+                                println("Failed to read pairing status: ${e.message}")
                             }
-                        )
+                        }
                     }
                 } catch (wifiErr: Exception) {
-                    println("Could not auto-connect to Wi-Fi: ${wifiErr.message}")
+                    println("Could not initialize pairing status polling: ${wifiErr.message}")
                 }
 
                 // 2. Observe slide state characteristic updates (as fallback/backup)
