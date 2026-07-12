@@ -62,14 +62,16 @@ data class SlideInfo(
 @Serializable
 data class SlidesResponse(
     val slides: List<SlideInfo>,
-    val current_index: Int
+    val current_index: Int,
+    val presentation_id: String = ""
 )
 
 @Serializable
 data class WSMessage(
     val type: String,
     val current_index: Int,
-    val total_slides: Int? = null
+    val total_slides: Int? = null,
+    val presentation_id: String? = null
 )
 
 @Serializable
@@ -101,6 +103,9 @@ class ControlScreenModel(
     private val _isConnected = MutableStateFlow(false)
     val isConnected = _isConnected.asStateFlow()
 
+    private val _presentationId = MutableStateFlow("")
+    val presentationId = _presentationId.asStateFlow()
+
     private var blePeripheral: Peripheral? = null
 
     init {
@@ -118,6 +123,7 @@ class ControlScreenModel(
                 val response: SlidesResponse = client.get("http://$ip:$port/slides").body()
                 _slides.value = response.slides
                 _currentIndex.value = response.current_index
+                _presentationId.value = response.presentation_id
                 _isConnected.value = true
             } catch (e: Exception) {
                 _isConnected.value = false
@@ -136,6 +142,9 @@ class ControlScreenModel(
                             val msg = Json.decodeFromString<WSMessage>(text)
                             if (msg.type == "state") {
                                 _currentIndex.value = msg.current_index
+                                if (!msg.presentation_id.isNullOrEmpty() && msg.presentation_id != _presentationId.value) {
+                                    loadSlides()
+                                }
                             }
                         }
                     }
@@ -274,6 +283,7 @@ data class ControlScreen(
         val currentIndex by model.currentIndex.collectAsState()
         val slides by model.slides.collectAsState()
         val isConnected by model.isConnected.collectAsState()
+        val presentationId by model.presentationId.collectAsState()
 
         Scaffold(
             topBar = {
@@ -431,7 +441,7 @@ data class ControlScreen(
                                     )
                                 }
                             } else {
-                                val imageUrl = "http://$ip:$port/slides/$currentIndex/image"
+                                val imageUrl = "http://$ip:$port/slides/$currentIndex/image?pid=$presentationId"
                                 getPlatform().RemoteImage(
                                     url = imageUrl,
                                     contentDescription = "Slide Preview",
