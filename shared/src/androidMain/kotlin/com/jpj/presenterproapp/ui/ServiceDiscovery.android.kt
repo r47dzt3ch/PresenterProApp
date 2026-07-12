@@ -8,6 +8,8 @@ import com.jpj.presenterproapp.AppContext
 actual class ServiceDiscovery actual constructor() {
     private var nsdManager: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private val resolveQueue = mutableListOf<NsdServiceInfo>()
+    private var isResolving = false
 
     actual fun startDiscovery(onServiceDiscovered: (name: String, ip: String, port: Int) -> Unit) {
         val context = AppContext.context ?: return
@@ -32,19 +34,11 @@ actual class ServiceDiscovery actual constructor() {
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo?) {
                 if (serviceInfo == null) return
-                // Check if the service matches our custom type
                 if (serviceInfo.serviceType.contains("_presenterpro")) {
-                    nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(resolvedInfo: NsdServiceInfo?, errorCode: Int) {}
-
-                        override fun onServiceResolved(resolvedServiceInfo: NsdServiceInfo?) {
-                            if (resolvedServiceInfo == null) return
-                            val host = resolvedServiceInfo.host?.hostAddress ?: return
-                            val port = resolvedServiceInfo.port
-                            val name = resolvedServiceInfo.serviceName ?: "PyPresenterPro Desktop"
-                            onServiceDiscovered(name, host, port)
-                        }
-                    })
+                    synchronized(resolveQueue) {
+                        resolveQueue.add(serviceInfo)
+                        resolveNext(onServiceDiscovered)
+                    }
                 }
             }
 
@@ -58,6 +52,46 @@ actual class ServiceDiscovery actual constructor() {
         }
     }
 
+    private fun resolveNext(onServiceDiscovered: (name: String, ip: String, port: Int) -> Unit) {
+        val manager = nsdManager ?: return
+        synchronized(resolveQueue) {
+            if (isResolving || resolveQueue.isEmpty()) return
+            isResolving = true
+            val nextService = resolveQueue.removeAt(0)
+            
+            try {
+                manager.resolveService(nextService, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(resolvedInfo: NsdServiceInfo?, errorCode: Int) {
+                        synchronized(resolveQueue) {
+                            isResolving = false
+                            resolveNext(onServiceDiscovered)
+                        }
+                    }
+
+                    override fun onServiceResolved(resolvedServiceInfo: NsdServiceInfo?) {
+                        synchronized(resolveQueue) {
+                            isResolving = false
+                        }
+                        if (resolvedServiceInfo != null) {
+                            val host = resolvedServiceInfo.host?.hostAddress
+                            val port = resolvedServiceInfo.port
+                            val name = resolvedServiceInfo.serviceName ?: "PyPresenterPro Desktop"
+                            if (host != null) {
+                                onServiceDiscovered(name, host, port)
+                            }
+                        }
+                        synchronized(resolveQueue) {
+                            resolveNext(onServiceDiscovered)
+                        }
+                    }
+                })
+            } catch (e: Exception) {
+                isResolving = false
+                resolveNext(onServiceDiscovered)
+            }
+        }
+    }
+
     actual fun stopDiscovery() {
         try {
             discoveryListener?.let {
@@ -68,5 +102,9 @@ actual class ServiceDiscovery actual constructor() {
         }
         discoveryListener = null
         nsdManager = null
+        synchronized(resolveQueue) {
+            resolveQueue.clear()
+            isResolving = false
+        }
     }
 }
