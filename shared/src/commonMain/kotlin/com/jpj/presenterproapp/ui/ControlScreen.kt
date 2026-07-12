@@ -37,8 +37,7 @@ import com.juul.kable.Scanner
 import com.juul.kable.Filter
 import com.juul.kable.State
 import com.juul.kable.peripheral
-import io.kamel.image.KamelImage
-import io.kamel.image.asyncPainterResource
+import com.jpj.presenterproapp.getPlatform
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.plugins.contentnegotiation.*
@@ -433,12 +432,12 @@ data class ControlScreen(
                                 }
                             } else {
                                 val imageUrl = "http://$ip:$port/slides/$currentIndex/image"
-                                KamelImage(
-                                    resource = { asyncPainterResource(imageUrl) },
+                                getPlatform().RemoteImage(
+                                    url = imageUrl,
                                     contentDescription = "Slide Preview",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Fit,
-                                    onLoading = { progress ->
+                                    onLoading = {
                                         CircularProgressIndicator(color = NeonCyan)
                                     },
                                     onFailure = { exception ->

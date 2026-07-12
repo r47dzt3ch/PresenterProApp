@@ -17,6 +17,7 @@ kotlinx-serialization = "1.11.0"
 ktor = "3.5.1"
 voyager = "1.1.0-beta03"
 kable = "0.32.0"
+coil = "3.1.0"
 composeIcons = "1.7.3"
 kamel = "1.0.9"
 
@@ -54,6 +55,8 @@ ktor-client-websockets = { module = "io.ktor:ktor-client-websockets", version.re
 ktor-serialization-kotlinxJson = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
 
 kable = { module = "com.juul.kable:core", version.ref = "kable" }
+coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
 kamel = { module = "media.kamel:kamel-image", version.ref = "kamel" }
 
 [plugins]
