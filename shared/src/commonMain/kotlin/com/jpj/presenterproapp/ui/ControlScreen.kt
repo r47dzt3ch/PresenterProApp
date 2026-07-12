@@ -31,6 +31,7 @@ import cafe.adriel.voyager.core.model.screenModelScope
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
+import com.juul.kable.Advertisement
 import com.benasher44.uuid.uuidFrom
 import com.juul.kable.Peripheral
 import com.juul.kable.Scanner
@@ -85,7 +86,8 @@ class ControlScreenModel(
     val ip: String,
     val port: Int,
     val isBle: Boolean,
-    val bleAddress: String?
+    val bleAddress: String?,
+    val bleAdvertisement: Advertisement? = null
 ) : ScreenModel {
     private val client = HttpClient {
         install(ContentNegotiation) {
@@ -167,12 +169,16 @@ class ControlScreenModel(
     private fun startBleConnection() {
         screenModelScope.launch {
             try {
-                // Scan for the advertisement matching our SERVICE_UUID
-                val scanner = Scanner {
-                    filters = listOf(Filter.Service(uuidFrom("4fafc201-1fb5-459e-8fcc-c5c9c331914b")))
+                val peripheral = if (bleAdvertisement != null) {
+                    screenModelScope.peripheral(bleAdvertisement)
+                } else {
+                    // Scan for the advertisement matching our SERVICE_UUID
+                    val scanner = Scanner {
+                        filters = listOf(Filter.Service(uuidFrom("4fafc201-1fb5-459e-8fcc-c5c9c331914b")))
+                    }
+                    val advertisement = scanner.advertisements.first()
+                    screenModelScope.peripheral(advertisement)
                 }
-                val advertisement = scanner.advertisements.first()
-                val peripheral = screenModelScope.peripheral(advertisement)
 
                 // Track connection status
                 screenModelScope.launch {
@@ -348,13 +354,14 @@ data class ControlScreen(
     val ip: String,
     val port: Int,
     val isBle: Boolean = false,
-    val bleAddress: String? = null
+    val bleAddress: String? = null,
+    val bleAdvertisement: Advertisement? = null
 ) : Screen {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     override fun Content() {
         val navigator = LocalNavigator.currentOrThrow
-        val model = rememberScreenModel { ControlScreenModel(ip, port, isBle, bleAddress) }
+        val model = rememberScreenModel { ControlScreenModel(ip, port, isBle, bleAddress, bleAdvertisement) }
         val currentIndex by model.currentIndex.collectAsState()
         val slides by model.slides.collectAsState()
         val isConnected by model.isConnected.collectAsState()

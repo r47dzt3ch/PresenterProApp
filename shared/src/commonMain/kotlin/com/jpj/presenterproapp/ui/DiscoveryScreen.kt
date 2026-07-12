@@ -202,14 +202,15 @@ class DiscoveryScreen : Screen {
                                             .clickable {
                                                 if (server.isBle && server.bleAdvertisement != null) {
                                                     // Navigate passing BLE info
-                                                    navigator.push(
-                                                        ControlScreen(
-                                                            ip = server.ip,
-                                                            port = 0,
-                                                            isBle = true,
-                                                            bleAddress = server.ip
-                                                        )
-                                                    )
+                                                     navigator.push(
+                                                         ControlScreen(
+                                                             ip = server.ip,
+                                                             port = 0,
+                                                             isBle = true,
+                                                             bleAddress = server.ip,
+                                                             bleAdvertisement = server.bleAdvertisement
+                                                         )
+                                                     )
                                                  } else {
                                                      isPairing = true
                                                      pairingError = null
