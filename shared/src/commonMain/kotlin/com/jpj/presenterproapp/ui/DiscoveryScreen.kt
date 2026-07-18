@@ -68,13 +68,29 @@ class DiscoveryScreen : Screen {
         var isPairing by remember { mutableStateOf(false) }
         var pairingError by remember { mutableStateOf<String?>(null) }
 
+        val checkClient = remember {
+            HttpClient {
+                install(io.ktor.client.plugins.HttpTimeout) {
+                    requestTimeoutMillis = 800
+                    connectTimeoutMillis = 800
+                }
+            }
+        }
+
         // Start mDNS Network Discovery
         DisposableEffect(Unit) {
             val discovery = ServiceDiscovery()
             discovery.startDiscovery { name, ip, port ->
-                val newServer = DiscoveredServer(name, ip, port, isBle = false)
-                if (discoveredServers.none { it.ip == ip && it.port == port }) {
-                    discoveredServers = discoveredServers + newServer
+                coroutineScope.launch {
+                    try {
+                        checkClient.get("http://$ip:$port/slides")
+                        val newServer = DiscoveredServer(name, ip, port, isBle = false)
+                        if (discoveredServers.none { it.ip == ip && it.port == port }) {
+                            discoveredServers = discoveredServers + newServer
+                        }
+                    } catch (e: Exception) {
+                        // Ignore unreachable IPs
+                    }
                 }
             }
             onDispose {
